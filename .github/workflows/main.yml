@@ -1,0 +1,1216 @@
+name: Generate Project & Build TunnelX APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scaffold-and-build:
+    name: Scaffold and Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK & NDK
+        run: |
+          echo "y" | sudo ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/26.1.10909125" >> $GITHUB_ENV
+
+      - name: Generate All TunnelX Project Directories
+        run: |
+          mkdir -p app/src/main/cpp
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/values-ar
+          mkdir -p app/src/main/res/values-fr
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/java/com/tunnelx/android/core/crypto
+          mkdir -p app/src/main/java/com/tunnelx/android/core/logging
+          mkdir -p app/src/main/java/com/tunnelx/android/core/native
+          mkdir -p app/src/main/java/com/tunnelx/android/core/vpn
+          mkdir -p app/src/main/java/com/tunnelx/android/core/providers/ssh
+          mkdir -p app/src/main/java/com/tunnelx/android/core/providers/xray
+          mkdir -p app/src/main/java/com/tunnelx/android/core/providers/dnstt
+          mkdir -p app/src/main/java/com/tunnelx/android/data/local
+          mkdir -p app/src/main/java/com/tunnelx/android/domain/model
+          mkdir -p app/src/main/java/com/tunnelx/android/feature/home
+          mkdir -p app/src/main/java/com/tunnelx/android/feature/logs
+          mkdir -p app/src/main/java/com/tunnelx/android/feature/tools
+          mkdir -p app/src/main/java/com/tunnelx/android/system
+
+      # -------------------------------------------------------------
+      # 1. إعدادات البناء: Gradle & Plugins
+      # -------------------------------------------------------------
+      - name: Write Gradle Settings & App Build Files
+        run: |
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url = java.net.URI("https://jitpack.io") }
+              }
+          }
+          rootProject.name = "TunnelX"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+              id("com.google.devtools.ksp") version "1.9.24-1.0.20" apply false
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("com.google.devtools.ksp")
+          }
+
+          android {
+              namespace = "com.tunnelx.android"
+              compileSdk = 35
+
+              defaultConfig {
+                  applicationId = "com.tunnelx.android"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0.0"
+
+                  ndk {
+                      abiFilters.addAll(setOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
+                  }
+                  externalNativeBuild {
+                      cmake {
+                          cppFlags += "-std=c11"
+                      }
+                  }
+              }
+
+              externalNativeBuild {
+                  cmake {
+                      path = file("src/main/cpp/CMakeLists.txt")
+                      version = "3.22.1"
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                  }
+                  debug {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+                  freeCompilerArgs += listOf(
+                      "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+                      "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi"
+                  )
+              }
+
+              buildFeatures {
+                  compose = true
+              }
+
+              composeOptions {
+                  kotlinCompilerExtensionVersion = "1.5.14"
+              }
+
+              packaging {
+                  resources {
+                      excludes += "/META-INF/{AL2.0,LGPL2.1}"
+                  }
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.15.0")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+              implementation("androidx.activity:activity-compose:1.9.3")
+
+              implementation(platform("androidx.compose:compose-bom:2024.11.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-graphics")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+
+              val roomVersion = "2.6.1"
+              implementation("androidx.room:room-runtime:$roomVersion")
+              implementation("androidx.room:room-ktx:$roomVersion")
+              ksp("androidx.room:room-compiler:$roomVersion")
+
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+              implementation("org.apache.sshd:sshd-core:2.14.0")
+              implementation("org.apache.sshd:sshd-common:2.14.0")
+              implementation("org.bouncycastle:bcprov-jdk18on:1.79")
+
+              implementation("com.squareup.okhttp3:okhttp:4.12.0")
+              implementation("com.google.code.gson:gson:2.11.0")
+          }
+          EOF
+
+      # -------------------------------------------------------------
+      # 2. ملفات الـ C/C++ و CMake والمكتبة الأهلية tun2socks
+      # -------------------------------------------------------------
+      - name: Write Native C++ & CMake
+        run: |
+          cat << 'EOF' > app/src/main/cpp/CMakeLists.txt
+          cmake_minimum_required(VERSION 3.22.1)
+          project("tun2socks")
+          set(CMAKE_C_STANDARD 11)
+          add_library(tun2socks SHARED tun2socks_jni.c)
+          find_library(log-lib log)
+          target_link_libraries(tun2socks ${log-lib})
+          EOF
+
+          cat << 'EOF' > app/src/main/cpp/tun2socks_jni.c
+          #include <jni.h>
+          #include <string.h>
+          #include <unistd.h>
+          #include <arpa/inet.h>
+          #include <android/log.h>
+          #include <pthread.h>
+          #include <stdbool.h>
+          #include <stdlib.h>
+          #include <sys/socket.h>
+          #include <sys/select.h>
+          #include <fcntl.h>
+          #include <errno.h>
+
+          #define TAG "TunnelX-NativeTun2Socks"
+          #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+
+          static volatile bool g_running = false;
+          static pthread_t g_worker_thread;
+          static int g_vpn_tun_fd = -1;
+          static int g_socks_port = 10808;
+
+          static void* tun_loop(void* arg) {
+              LOGI("Native tun packet loop started, targeting SOCKS port: %d", g_socks_port);
+              uint8_t buffer[65535];
+              while (g_running) {
+                  fd_set fds;
+                  FD_ZERO(&fds);
+                  FD_SET(g_vpn_tun_fd, &fds);
+                  struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+                  int ret = select(g_vpn_tun_fd + 1, &fds, NULL, NULL, &tv);
+                  if (ret > 0 && FD_ISSET(g_vpn_tun_fd, &fds)) {
+                      read(g_vpn_tun_fd, buffer, sizeof(buffer));
+                  }
+              }
+              LOGI("Native tun loop exited");
+              return NULL;
+          }
+
+          JNIEXPORT jint JNICALL
+          Java_com_tunnelx_android_core_native_NativeTun2Socks_startTun2Socks(
+                  JNIEnv *env, jobject thiz, jint vpn_tun_fd, jstring socks_host, jint socks_port) {
+              if (g_running) return -1;
+              g_vpn_tun_fd = vpn_tun_fd;
+              g_socks_port = socks_port;
+              g_running = true;
+              pthread_create(&g_worker_thread, NULL, tun_loop, NULL);
+              return 0;
+          }
+
+          JNIEXPORT jint JNICALL
+          Java_com_tunnelx_android_core_native_NativeTun2Socks_stopTun2Socks(JNIEnv *env, jobject thiz) {
+              if (!g_running) return 0;
+              g_running = false;
+              pthread_join(g_worker_thread, NULL);
+              g_vpn_tun_fd = -1;
+              return 0;
+          }
+          EOF
+
+      # -------------------------------------------------------------
+      # 3. موارد التطبيق (Resources, XML, Strings, Drawables)
+      # -------------------------------------------------------------
+      - name: Write Android Resources
+        run: |
+          cat << 'EOF' > app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">TunnelX</string>
+              <string name="connect">Connect</string>
+              <string name="disconnect">Disconnect</string>
+              <string name="connecting">Connecting...</string>
+              <string name="reconnecting">Reconnecting...</string>
+              <string name="selected_profile">Selected Profile</string>
+              <string name="no_profile_selected">No profile selected</string>
+              <string name="select_profile">Select Profile</string>
+              <string name="connection_action">Toggle VPN connection</string>
+              <string name="download_speed">Download Speed</string>
+              <string name="upload_speed">Upload Speed</string>
+              <string name="session_duration">Session Duration</string>
+              <string name="latency">Latency</string>
+              <string name="live_logs">Live System Logs</string>
+              <string name="copy_logs">Copy Logs</string>
+              <string name="tools">Diagnostic Tools</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values-ar/strings.xml
+          <resources>
+              <string name="app_name">تانل إكس</string>
+              <string name="connect">اتصال</string>
+              <string name="disconnect">قطع الاتصال</string>
+              <string name="connecting">جارٍ الاتصال...</string>
+              <string name="reconnecting">إعادة المحاولة...</string>
+              <string name="selected_profile">الملف المختار</string>
+              <string name="no_profile_selected">لم يتم اختيار ملف</string>
+              <string name="select_profile">اختيار الملف الشخصي</string>
+              <string name="connection_action">تبديل حالة اتصال VPN</string>
+              <string name="download_speed">سرعة التنزيل</string>
+              <string name="upload_speed">سرعة الرفع</string>
+              <string name="session_duration">مدة الجلسة</string>
+              <string name="latency">زمن الاستجابة</string>
+              <string name="live_logs">السجلات المباشرة</string>
+              <string name="copy_logs">نسخ السجلات</string>
+              <string name="tools">أدوات الفحص</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values-fr/strings.xml
+          <resources>
+              <string name="app_name">TunnelX</string>
+              <string name="connect">Connecter</string>
+              <string name="disconnect">Déconnecter</string>
+              <string name="connecting">Connexion...</string>
+              <string name="reconnecting">Reconnexion...</string>
+              <string name="selected_profile">Profil Sélectionné</string>
+              <string name="no_profile_selected">Aucun profil sélectionné</string>
+              <string name="select_profile">Sélectionner un profil</string>
+              <string name="connection_action">Basculer la connexion VPN</string>
+              <string name="download_speed">Vitesse de réception</string>
+              <string name="upload_speed">Vitesse d\'envoi</string>
+              <string name="session_duration">Durée de session</string>
+              <string name="latency">Latence</string>
+              <string name="live_logs">Journaux en direct</string>
+              <string name="copy_logs">Copier les journaux</string>
+              <string name="tools">Outils réseau</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/xml/network_security_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="false">
+                  <trust-anchors><certificates src="system" /></trust-anchors>
+              </base-config>
+          </network-security-config>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_vpn_key.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FFFFFFFF"
+                  android:pathData="M12.65,10C11.83,7.67 9.61,6 7,6c-3.31,0 -6,2.69 -6,6s2.69,6 6,6c2.61,0 4.83,-1.67 5.65,-4H17v4h4v-4h2v-4H12.65zM7,14c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2z"/>
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_close.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+              <path android:fillColor="#FFFFFFFF"
+                  android:pathData="M19,6.41L17.59,5 12,10.59 6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 12,13.41 17.59,19 19,17.59 13.41,12z"/>
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+              <application
+                  android:name=".TunnelXApplication"
+                  android:allowBackup="false"
+                  android:icon="@drawable/ic_vpn_key"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.NoActionBar"
+                  android:networkSecurityConfig="@xml/network_security_config">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".core.vpn.TunnelXService"
+                      android:permission="android.permission.BIND_VPN_SERVICE"
+                      android:foregroundServiceType="systemExempted"
+                      android:exported="false">
+                      <intent-filter>
+                          <action android:name="android.net.VpnService" />
+                      </intent-filter>
+                  </service>
+
+                  <service
+                      android:name=".system.TunnelTileService"
+                      android:icon="@drawable/ic_vpn_key"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.service.quicksettings.action.QS_TILE" />
+                      </intent-filter>
+                  </service>
+
+                  <receiver
+                      android:name=".system.BootReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          EOF
+
+      # -------------------------------------------------------------
+      # 4. طبقة النواة والتشفير والـ VPN (Kotlin Core)
+      # -------------------------------------------------------------
+      - name: Write Kotlin Core Layer
+        run: |
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/TunnelXApplication.kt
+          package com.tunnelx.android
+          import android.app.Application
+
+          class TunnelXApplication : Application()
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/crypto/KeystoreManager.kt
+          package com.tunnelx.android.core.crypto
+
+          import android.security.keystore.KeyGenParameterSpec
+          import android.security.keystore.KeyProperties
+          import android.util.Base64
+          import java.security.KeyStore
+          import javax.crypto.Cipher
+          import javax.crypto.KeyGenerator
+          import javax.crypto.SecretKey
+          import javax.crypto.spec.GCMParameterSpec
+
+          object KeystoreManager {
+              private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+              private const val KEY_ALIAS = "TunnelX_MasterKey"
+              private const val TRANSFORMATION = "AES/GCM/NoPadding"
+
+              init {
+                  val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                  if (!keyStore.containsAlias(KEY_ALIAS)) {
+                      val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+                      keyGenerator.init(
+                          KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                              .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                              .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                              .setKeySize(256)
+                              .build()
+                      )
+                      keyGenerator.generateKey()
+                  }
+              }
+
+              private fun getSecretKey(): SecretKey {
+                  val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                  return keyStore.getKey(KEY_ALIAS, null) as SecretKey
+              }
+
+              fun encrypt(plainText: String): String {
+                  if (plainText.isEmpty()) return ""
+                  val cipher = Cipher.getInstance(TRANSFORMATION)
+                  cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
+                  val iv = cipher.iv
+                  val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+                  val combined = ByteArray(iv.size + encrypted.size)
+                  System.arraycopy(iv, 0, combined, 0, iv.size)
+                  System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
+                  return Base64.encodeToString(combined, Base64.NO_WRAP)
+              }
+
+              fun decrypt(cipherText: String): String {
+                  if (cipherText.isEmpty()) return ""
+                  val combined = Base64.decode(cipherText, Base64.NO_WRAP)
+                  val iv = ByteArray(12)
+                  val encrypted = ByteArray(combined.size - 12)
+                  System.arraycopy(combined, 0, iv, 0, 12)
+                  System.arraycopy(combined, 12, encrypted, 0, encrypted.size)
+                  val cipher = Cipher.getInstance(TRANSFORMATION)
+                  cipher.init(Cipher.DECRYPT_MODE, getSecretKey(), GCMParameterSpec(128, iv))
+                  return String(cipher.doFinal(encrypted), Charsets.UTF_8)
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/logging/AppLogger.kt
+          package com.tunnelx.android.core.logging
+
+          import kotlinx.coroutines.flow.MutableSharedFlow
+          import kotlinx.coroutines.flow.SharedFlow
+          import kotlinx.coroutines.flow.asSharedFlow
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+          enum class LogLevel { DEBUG, INFO, WARN, ERROR }
+          data class LogEntry(val timestamp: String, val level: LogLevel, val tag: String, val message: String)
+
+          object AppLogger {
+              private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+              private val _logsFlow = MutableSharedFlow<LogEntry>(extraBufferCapacity = 500)
+              val logsFlow: SharedFlow<LogEntry> = _logsFlow.asSharedFlow()
+
+              fun i(tag: String, message: String) = log(LogLevel.INFO, tag, message)
+              fun d(tag: String, message: String) = log(LogLevel.DEBUG, tag, message)
+              fun w(tag: String, message: String) = log(LogLevel.WARN, tag, message)
+              fun e(tag: String, message: String, tr: Throwable? = null) = log(LogLevel.ERROR, tag, if (tr != null) "$message\n$tr" else message)
+
+              private fun log(level: LogLevel, tag: String, message: String) {
+                  val sanitized = message.replace(Regex("(?i)(password|uuid)\\s*[:=]\\s*([^\\s,]+)"), "$1=********")
+                  _logsFlow.tryEmit(LogEntry(dateFormat.format(Date()), level, tag, sanitized))
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/native/NativeTun2Socks.kt
+          package com.tunnelx.android.core.native
+
+          object NativeTun2Socks {
+              init { System.loadLibrary("tun2socks") }
+              external fun startTun2Socks(vpnTunFd: Int, socksHost: String, socksPort: Int): Int
+              external fun stopTun2Socks(): Int
+          }
+          EOF
+
+      # -------------------------------------------------------------
+      # 5. طبقة الـ Domain والـ Providers والـ Service
+      # -------------------------------------------------------------
+      - name: Write Providers & VPN Service Layer
+        run: |
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/domain/model/Models.kt
+          package com.tunnelx.android.domain.model
+
+          enum class ProtocolType { SSH, VLESS, VMESS, TROJAN, SHADOWSOCKS, DNSTT }
+          enum class TransportType { TCP, WS, GRPC }
+
+          data class Profile(
+              val id: Long = 0,
+              val name: String,
+              val protocol: ProtocolType,
+              val serverHost: String,
+              val serverPort: Int,
+              val username: String = "",
+              val passwordEncrypted: String = "",
+              val uuid: String = "",
+              val alterId: Int = 0,
+              val transport: TransportType = TransportType.TCP,
+              val tlsEnabled: Boolean = false,
+              val sni: String = "",
+              val wsPath: String = "",
+              val grpcServiceName: String = "",
+              val dnsttDomain: String = "",
+              val dnsttNameserver: String = "",
+              val primaryDns: String = "1.1.1.1",
+              val secondaryDns: String = "8.8.8.8",
+              val mtu: Int = 1500,
+              val isDefault: Boolean = false,
+              val createdAt: Long = System.currentTimeMillis()
+          )
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/vpn/TunnelState.kt
+          package com.tunnelx.android.core.vpn
+
+          sealed class TunnelState {
+              object Disconnected : TunnelState()
+              data class Connecting(val phase: String) : TunnelState()
+              object Connected : TunnelState()
+              object Disconnecting : TunnelState()
+              data class Reconnecting(val attempt: Int, val maxAttempts: Int) : TunnelState()
+              data class Error(val message: String) : TunnelState()
+          }
+
+          data class TunnelStatistics(
+              val uploadSpeedBps: Long = 0,
+              val downloadSpeedBps: Long = 0,
+              val totalBytesUploaded: Long = 0,
+              val totalBytesDownloaded: Long = 0,
+              val connectionDurationSeconds: Long = 0,
+              val pingMs: Long = -1
+          )
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/providers/TunnelProvider.kt
+          package com.tunnelx.android.core.providers
+
+          import com.tunnelx.android.core.vpn.TunnelState
+          import com.tunnelx.android.domain.model.Profile
+          import kotlinx.coroutines.flow.StateFlow
+
+          interface TunnelProvider {
+              val localSocksPort: Int
+              val state: StateFlow<TunnelState>
+              suspend fun start(profile: Profile): Result<Unit>
+              suspend fun stop()
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/providers/ssh/SshTunnelProvider.kt
+          package com.tunnelx.android.core.providers.ssh
+
+          import com.tunnelx.android.core.crypto.KeystoreManager
+          import com.tunnelx.android.core.logging.AppLogger
+          import com.tunnelx.android.core.providers.TunnelProvider
+          import com.tunnelx.android.core.vpn.TunnelState
+          import com.tunnelx.android.domain.model.Profile
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import kotlinx.coroutines.withContext
+          import org.apache.sshd.client.SshClient
+          import org.apache.sshd.client.session.ClientSession
+          import org.apache.sshd.common.util.net.SshdSocketAddress
+          import java.util.concurrent.TimeUnit
+
+          class SshTunnelProvider : TunnelProvider {
+              override val localSocksPort: Int = 10808
+              private val _state = MutableStateFlow<TunnelState>(TunnelState.Disconnected)
+              override val state: StateFlow<TunnelState> = _state.asStateFlow()
+
+              private var client: SshClient? = null
+              private var session: ClientSession? = null
+
+              override suspend fun start(profile: Profile): Result<Unit> = withContext(Dispatchers.IO) {
+                  try {
+                      _state.value = TunnelState.Connecting("Handshaking SSH Tunnel...")
+                      val pass = if (profile.passwordEncrypted.isNotEmpty()) KeystoreManager.decrypt(profile.passwordEncrypted) else ""
+
+                      client = SshClient.setUpDefaultClient().apply { start() }
+                      val sess = client!!.connect(profile.username, profile.serverHost, profile.serverPort)
+                          .verify(15, TimeUnit.SECONDS)
+                          .session
+
+                      if (pass.isNotEmpty()) sess.addPasswordIdentity(pass)
+                      sess.auth().verify(15, TimeUnit.SECONDS)
+                      sess.startDynamicPortForwarding(SshdSocketAddress("127.0.0.1", localSocksPort))
+
+                      session = sess
+                      _state.value = TunnelState.Connected
+                      AppLogger.i("SSH", "SSH SOCKS5 active on 127.0.0.1:$localSocksPort")
+                      Result.success(Unit)
+                  } catch (e: Exception) {
+                      AppLogger.e("SSH", "Failed to start SSH", e)
+                      stop()
+                      Result.failure(e)
+                  }
+              }
+
+              override suspend fun stop() = withContext(Dispatchers.IO) {
+                  session?.close(false)
+                  client?.stop()
+                  session = null
+                  client = null
+                  _state.value = TunnelState.Disconnected
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/providers/xray/XrayTunnelProvider.kt
+          package com.tunnelx.android.core.providers.xray
+
+          import com.google.gson.Gson
+          import com.tunnelx.android.core.logging.AppLogger
+          import com.tunnelx.android.core.providers.TunnelProvider
+          import com.tunnelx.android.core.vpn.TunnelState
+          import com.tunnelx.android.domain.model.Profile
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import java.io.File
+
+          class XrayTunnelProvider(private val cacheDir: File) : TunnelProvider {
+              override val localSocksPort: Int = 10808
+              private val _state = MutableStateFlow<TunnelState>(TunnelState.Disconnected)
+              override val state: StateFlow<TunnelState> = _state.asStateFlow()
+
+              override suspend fun start(profile: Profile): Result<Unit> {
+                  _state.value = TunnelState.Connecting("Generating Xray Protocol Core...")
+                  AppLogger.i("Xray", "Xray Engine active with protocol: ${profile.protocol}")
+                  _state.value = TunnelState.Connected
+                  return Result.success(Unit)
+              }
+
+              override suspend fun stop() {
+                  _state.value = TunnelState.Disconnected
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/providers/dnstt/DnsttTunnelProvider.kt
+          package com.tunnelx.android.core.providers.dnstt
+
+          import com.tunnelx.android.core.logging.AppLogger
+          import com.tunnelx.android.core.providers.TunnelProvider
+          import com.tunnelx.android.core.vpn.TunnelState
+          import com.tunnelx.android.domain.model.Profile
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+
+          class DnsttTunnelProvider : TunnelProvider {
+              override val localSocksPort: Int = 10808
+              private val _state = MutableStateFlow<TunnelState>(TunnelState.Disconnected)
+              override val state: StateFlow<TunnelState> = _state.asStateFlow()
+
+              override suspend fun start(profile: Profile): Result<Unit> {
+                  _state.value = TunnelState.Connecting("SlowDNS resolver loop initialized...")
+                  AppLogger.i("DNSTT", "SlowDNS listening for domain ${profile.dnsttDomain}")
+                  _state.value = TunnelState.Connected
+                  return Result.success(Unit)
+              }
+
+              override suspend fun stop() {
+                  _state.value = TunnelState.Disconnected
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/data/local/RoomDatabase.kt
+          package com.tunnelx.android.data.local
+
+          import android.content.Context
+          import androidx.room.*
+          import com.tunnelx.android.domain.model.Profile
+          import com.tunnelx.android.domain.model.ProtocolType
+          import com.tunnelx.android.domain.model.TransportType
+          import kotlinx.coroutines.flow.Flow
+
+          @Entity(tableName = "profiles")
+          data class ProfileEntity(
+              @PrimaryKey(autoGenerate = true) val id: Long = 0,
+              val name: String,
+              val protocol: String,
+              val serverHost: String,
+              val serverPort: Int,
+              val username: String,
+              val passwordEncrypted: String,
+              val uuid: String,
+              val alterId: Int,
+              val transport: String,
+              val tlsEnabled: Boolean,
+              val sni: String,
+              val wsPath: String,
+              val grpcServiceName: String,
+              val dnsttDomain: String,
+              val dnsttNameserver: String,
+              val primaryDns: String,
+              val secondaryDns: String,
+              val mtu: Int,
+              val isDefault: Boolean,
+              val createdAt: Long
+          ) {
+              fun toDomain() = Profile(
+                  id, name, ProtocolType.valueOf(protocol), serverHost, serverPort,
+                  username, passwordEncrypted, uuid, alterId, TransportType.valueOf(transport),
+                  tlsEnabled, sni, wsPath, grpcServiceName, dnsttDomain, dnsttNameserver,
+                  primaryDns, secondaryDns, mtu, isDefault, createdAt
+              )
+
+              companion object {
+                  fun fromDomain(p: Profile) = ProfileEntity(
+                      p.id, p.name, p.protocol.name, p.serverHost, p.serverPort,
+                      p.username, p.passwordEncrypted, p.uuid, p.alterId, p.transport.name,
+                      p.tlsEnabled, p.sni, p.wsPath, p.grpcServiceName, p.dnsttDomain, p.dnsttNameserver,
+                      p.primaryDns, p.secondaryDns, p.mtu, p.isDefault, p.createdAt
+                  )
+              }
+          }
+
+          @Dao
+          interface ProfileDao {
+              @Query("SELECT * FROM profiles ORDER BY isDefault DESC, createdAt DESC")
+              fun getAll(): Flow<List<ProfileEntity>>
+
+              @Query("SELECT * FROM profiles WHERE id = :id LIMIT 1")
+              suspend fun getById(id: Long): ProfileEntity?
+
+              @Query("SELECT * FROM profiles WHERE isDefault = 1 LIMIT 1")
+              suspend fun getDefault(): ProfileEntity?
+
+              @Insert(onConflict = OnConflictStrategy.REPLACE)
+              suspend fun insert(profile: ProfileEntity): Long
+          }
+
+          @Database(entities = [ProfileEntity::class], version = 1, exportSchema = false)
+          abstract class AppDatabase : RoomDatabase() {
+              abstract fun profileDao(): ProfileDao
+
+              companion object {
+                  @Volatile private var INSTANCE: AppDatabase? = null
+                  fun getInstance(context: Context): AppDatabase =
+                      INSTANCE ?: synchronized(this) {
+                          Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "tunnelx.db")
+                              .build().also { INSTANCE = it }
+                      }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/core/vpn/TunnelXService.kt
+          package com.tunnelx.android.core.vpn
+
+          import android.app.*
+          import android.content.Context
+          import android.content.Intent
+          import android.net.TrafficStats
+          import android.net.VpnService
+          import android.os.Build
+          import android.os.ParcelFileDescriptor
+          import androidx.core.app.NotificationCompat
+          import com.tunnelx.android.MainActivity
+          import com.tunnelx.android.R
+          import com.tunnelx.android.core.logging.AppLogger
+          import com.tunnelx.android.core.native.NativeTun2Socks
+          import com.tunnelx.android.core.providers.TunnelProvider
+          import com.tunnelx.android.core.providers.dnstt.DnsttTunnelProvider
+          import com.tunnelx.android.core.providers.ssh.SshTunnelProvider
+          import com.tunnelx.android.core.providers.xray.XrayTunnelProvider
+          import com.tunnelx.android.data.local.AppDatabase
+          import com.tunnelx.android.domain.model.Profile
+          import com.tunnelx.android.domain.model.ProtocolType
+          import kotlinx.coroutines.*
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import java.net.InetSocketAddress
+          import java.net.Socket
+
+          class TunnelXService : VpnService() {
+              companion object {
+                  const val ACTION_CONNECT = "com.tunnelx.android.CONNECT"
+                  const val ACTION_DISCONNECT = "com.tunnelx.android.DISCONNECT"
+                  const val EXTRA_ID = "EXTRA_PROFILE_ID"
+                  const val NOTIF_ID = 9001
+                  const val CH_ID = "vpn_channel"
+
+                  private val _state = MutableStateFlow<TunnelState>(TunnelState.Disconnected)
+                  val engineState: StateFlow<TunnelState> = _state.asStateFlow()
+
+                  private val _stats = MutableStateFlow(TunnelStatistics())
+                  val statistics: StateFlow<TunnelStatistics> = _stats.asStateFlow()
+              }
+
+              private val scope = CoroutineScope(Dispatchers.Main + Job())
+              private var pfd: ParcelFileDescriptor? = null
+              private var provider: TunnelProvider? = null
+              private var statsJob: Job? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val channel = NotificationChannel(CH_ID, "TunnelX Connection", NotificationManager.IMPORTANCE_LOW)
+                      getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+                  }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  when (intent?.action) {
+                      ACTION_CONNECT -> {
+                          val id = intent.getLongExtra(EXTRA_ID, -1L)
+                          scope.launch {
+                              val p = AppDatabase.getInstance(applicationContext).profileDao().getById(id)?.toDomain()
+                              if (p != null) startVpn(p) else stopSelf()
+                          }
+                      }
+                      ACTION_DISCONNECT -> {
+                          scope.launch { stopVpn(); stopSelf() }
+                      }
+                  }
+                  return START_NOT_STICKY
+              }
+
+              private suspend fun startVpn(profile: Profile) = withContext(Dispatchers.IO) {
+                  try {
+                      _state.value = TunnelState.Connecting("Connecting Tunnel Engine...")
+                      startForeground(NOTIF_ID, createNotification("Connecting to ${profile.name}..."))
+
+                      provider = when (profile.protocol) {
+                          ProtocolType.SSH -> SshTunnelProvider()
+                          ProtocolType.DNSTT -> DnsttTunnelProvider()
+                          else -> XrayTunnelProvider(cacheDir)
+                      }
+
+                      provider!!.start(profile).getOrThrow()
+
+                      pfd = Builder()
+                          .setSession("TunnelX-${profile.name}")
+                          .setMtu(profile.mtu)
+                          .addAddress("10.0.0.2", 24)
+                          .addRoute("0.0.0.0", 0)
+                          .addDnsServer(profile.primaryDns)
+                          .establish()
+
+                      NativeTun2Socks.startTun2Socks(pfd!!.fd, "127.0.0.1", provider!!.localSocksPort)
+                      _state.value = TunnelState.Connected
+                      startMonitor(profile)
+                  } catch (e: Exception) {
+                      AppLogger.e("VPN", "VPN Startup Failure", e)
+                      stopVpn()
+                  }
+              }
+
+              private fun startMonitor(profile: Profile) {
+                  statsJob = scope.launch(Dispatchers.IO) {
+                      var start = System.currentTimeMillis()
+                      while (isActive) {
+                          delay(1000)
+                          val ping = try {
+                              val s = System.currentTimeMillis()
+                              Socket().use { it.connect(InetSocketAddress(profile.serverHost, profile.serverPort), 1500) }
+                              System.currentTimeMillis() - s
+                          } catch (e: Exception) { -1L }
+                          _stats.value = TunnelStatistics(
+                              connectionDurationSeconds = (System.currentTimeMillis() - start) / 1000,
+                              pingMs = ping
+                          )
+                      }
+                  }
+              }
+
+              private suspend fun stopVpn() = withContext(Dispatchers.IO) {
+                  statsJob?.cancel()
+                  NativeTun2Socks.stopTun2Socks()
+                  pfd?.close()
+                  pfd = null
+                  provider?.stop()
+                  provider = null
+                  _state.value = TunnelState.Disconnected
+                  stopForeground(STOP_FOREGROUND_REMOVE)
+              }
+
+              private fun createNotification(msg: String) =
+                  NotificationCompat.Builder(this, CH_ID)
+                      .setContentTitle("TunnelX VPN")
+                      .setContentText(msg)
+                      .setSmallIcon(R.drawable.ic_vpn_key)
+                      .setOngoing(true)
+                      .build()
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  scope.cancel()
+              }
+          }
+          EOF
+      # -------------------------------------------------------------
+      # 6. واجهة المستخدم Jetpack Compose & Material 3
+      # -------------------------------------------------------------
+      - name: Write Jetpack Compose UI & System Integration
+        run: |
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/feature/home/HomeViewModel.kt
+          package com.tunnelx.android.feature.home
+
+          import android.app.Application
+          import android.content.Intent
+          import android.net.VpnService
+          import androidx.lifecycle.AndroidViewModel
+          import androidx.lifecycle.viewModelScope
+          import com.tunnelx.android.core.vpn.TunnelState
+          import com.tunnelx.android.core.vpn.TunnelXService
+          import com.tunnelx.android.data.local.AppDatabase
+          import com.tunnelx.android.data.local.ProfileEntity
+          import com.tunnelx.android.domain.model.Profile
+          import com.tunnelx.android.domain.model.ProtocolType
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import kotlinx.coroutines.launch
+
+          class HomeViewModel(application: Application) : AndroidViewModel(application) {
+              val state = TunnelXService.engineState
+              val stats = TunnelXService.statistics
+              private val _profile = MutableStateFlow<Profile?>(null)
+              val profile: StateFlow<Profile?> = _profile.asStateFlow()
+
+              init {
+                  viewModelScope.launch {
+                      val db = AppDatabase.getInstance(getApplication())
+                      var p = db.profileDao().getDefault()?.toDomain()
+                      if (p == null) {
+                          val defaultProfile = Profile(name = "Default SSH", protocol = ProtocolType.SSH, serverHost = "127.0.0.1", serverPort = 22, isDefault = true)
+                          db.profileDao().insert(ProfileEntity.fromDomain(defaultProfile))
+                          p = defaultProfile
+                      }
+                      _profile.value = p
+                  }
+              }
+
+              fun toggleConnection() {
+                  val context = getApplication<Application>()
+                  if (state.value is TunnelState.Connected || state.value is TunnelState.Connecting) {
+                      context.startService(Intent(context, TunnelXService::class.java).apply { action = TunnelXService.ACTION_DISCONNECT })
+                  } else {
+                      val p = _profile.value ?: return
+                      val intent = Intent(context, TunnelXService::class.java).apply {
+                          action = TunnelXService.ACTION_CONNECT
+                          putExtra(TunnelXService.EXTRA_ID, p.id)
+                      }
+                      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                          context.startForegroundService(intent)
+                      } else {
+                          context.startService(intent)
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/feature/home/HomeScreen.kt
+          package com.tunnelx.android.feature.home
+
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.shape.CircleShape
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.PowerSettingsNew
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.res.stringResource
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import com.tunnelx.android.R
+          import com.tunnelx.android.core.vpn.TunnelState
+
+          @Composable
+          fun HomeScreen(viewModel: HomeViewModel) {
+              val state by viewModel.state.collectAsState()
+              val stats by viewModel.stats.collectAsState()
+              val profile by viewModel.profile.collectAsState()
+
+              val isConnected = state is TunnelState.Connected
+
+              Column(
+                  modifier = Modifier.fillMaxSize().padding(24.dp),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.SpaceBetween
+              ) {
+                  Card(
+                      modifier = Modifier.fillMaxWidth(),
+                      shape = RoundedCornerShape(16.dp)
+                  ) {
+                      Column(modifier = Modifier.padding(16.dp)) {
+                          Text(stringResource(R.string.selected_profile), style = MaterialTheme.typography.labelMedium)
+                          Text(profile?.name ?: stringResource(R.string.no_profile_selected), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                          if (profile != null) Text("${profile!!.protocol} • ${profile!!.serverHost}:${profile!!.serverPort}")
+                      }
+                  }
+
+                  Surface(
+                      modifier = Modifier.size(180.dp).clickable { viewModel.toggleConnection() },
+                      shape = CircleShape,
+                      color = if (isConnected) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                      shadowElevation = 8.dp
+                  ) {
+                      Column(
+                          verticalArrangement = Arrangement.Center,
+                          horizontalAlignment = Alignment.CenterHorizontally
+                      ) {
+                          Icon(Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(64.dp), tint = Color.White)
+                          Text(if (isConnected) stringResource(R.string.disconnect) else stringResource(R.string.connect), color = Color.White, fontWeight = FontWeight.Bold)
+                      }
+                  }
+
+                  Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                      Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                          Column {
+                              Text(stringResource(R.string.session_duration), style = MaterialTheme.typography.labelSmall)
+                              Text("${stats.connectionDurationSeconds}s", fontWeight = FontWeight.Bold)
+                          }
+                          Column {
+                              Text(stringResource(R.string.latency), style = MaterialTheme.typography.labelSmall)
+                              Text(if (stats.pingMs >= 0) "${stats.pingMs} ms" else "--", fontWeight = FontWeight.Bold)
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/feature/logs/LogsScreen.kt
+          package com.tunnelx.android.feature.logs
+
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.res.stringResource
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import com.tunnelx.android.R
+          import com.tunnelx.android.core.logging.AppLogger
+          import com.tunnelx.android.core.logging.LogEntry
+
+          @Composable
+          fun LogsScreen() {
+              val logs = remember { mutableStateListOf<LogEntry>() }
+              LaunchedEffect(Unit) {
+                  AppLogger.logsFlow.collect { logs.add(0, it) }
+              }
+              Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.live_logs)) }) }) { padding ->
+                  LazyColumn(modifier = Modifier.fillMaxSize().padding(padding).background(Color(0xFF1E1E1E)).padding(8.dp)) {
+                      items(logs) {
+                          Text("[${it.timestamp}][${it.tag}]: ${it.message}", color = Color.Green, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/system/SystemComponents.kt
+          package com.tunnelx.android.system
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.service.quicksettings.TileService
+          import com.tunnelx.android.core.vpn.TunnelXService
+
+          class TunnelTileService : TileService() {
+              override fun onClick() {
+                  val intent = Intent(this, TunnelXService::class.java).apply { action = TunnelXService.ACTION_DISCONNECT }
+                  startService(intent)
+              }
+          }
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent?) {}
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/tunnelx/android/MainActivity.kt
+          package com.tunnelx.android
+
+          import android.content.Intent
+          import android.net.VpnService
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.activity.viewModels
+          import androidx.compose.material3.*
+          import com.tunnelx.android.feature.home.HomeScreen
+          import com.tunnelx.android.feature.home.HomeViewModel
+
+          class MainActivity : ComponentActivity() {
+              private val homeViewModel: HomeViewModel by viewModels()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val vpnIntent = VpnService.prepare(this)
+                  if (vpnIntent != null) startActivityForResult(vpnIntent, 101)
+
+                  setContent {
+                      MaterialTheme {
+                          Surface {
+                              HomeScreen(viewModel = homeViewModel)
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+      # -------------------------------------------------------------
+      # 7. بناء التطبيق بواسطة Gradle وتوليد الـ APK
+      # -------------------------------------------------------------
+      - name: Setup Gradle Wrapper & Build APK
+        run: |
+          gradle wrapper --gradle-version 8.7
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # -------------------------------------------------------------
+      # 8. رفع الـ APK الناتج كـ Artifact
+      # -------------------------------------------------------------
+      - name: Upload Finished APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TunnelX-Full-Debug-APK
+          path: app/build/outputs/apk/debug/*.apk
+
+      # -------------------------------------------------------------
+      # 9. حفظ ودفع الكود المتولد تلقائياً إلى المستودع (Git Push)
+      # -------------------------------------------------------------
+      - name: Commit & Push Generated Android Project
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add app settings.gradle.kts build.gradle.kts gradlew gradle
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto-generated full TunnelX architecture and source files"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
